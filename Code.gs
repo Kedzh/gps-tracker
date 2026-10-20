@@ -33,8 +33,10 @@ function doGet(e) {
       return json_({ ok: false, error: String(err) });
     }
   }
-  return json_({ ok: true, app: 'gps-tracker', sheet: SHEET_NAME });
+  return json_({ ok: true, app: 'gps-tracker', sheet: SHEET_NAME, ver: CODE_VER });
 }
+
+const CODE_VER = 3;   // 3 = хранение KEEP_ROWS последних точек (проверяется в журнале)
 
 /** Все точки листа в JSON для карты (только последние KEEP_ROWS). */
 function readPoints_() {
