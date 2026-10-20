@@ -220,8 +220,11 @@ const LS = {
 function load(k, def){ try{ const v = JSON.parse(localStorage.getItem(k)); return v ?? def; }catch(e){ return def; } }
 function save(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
 
+const DEFAULT_URL   = 'https://script.google.com/macros/s/AKfycbysHXi4x5AcVTVm3u-yQOG6-n7lMiHl4k8C3gJH185HVoF3Dl00F053QVxeMX3G27qdiA/exec';
+const DEFAULT_TOKEN = 'school-2026';
+
 let cfg = Object.assign({
-  url:'', token:'', sheet:'',
+  url:DEFAULT_URL, token:DEFAULT_TOKEN, sheet:'',
   device:'', label:'',
   interval:15, maxAcc:50
 }, load(LS.cfg, {}));
@@ -460,8 +463,9 @@ setInterval(() => { if (queue.length) flush(); }, 20000);
 loadForm();
 updStats();
 if (!cfg.device){ $('iDevice').value = defaultDevice(); cfg.device = $('iDevice').value; save(LS.cfg, cfg); }
-log('Приложение запущено. Укажите URL Apps Script в настройках.');
+log('Приложение запущено. URL Apps Script уже задан: ' + (cfg.url || 'не задан'));
 if (!cfg.url) log('⚠ URL веб-приложения не задан — точки будут копиться локально', 'warn');
+else log('Endpoint: ' + cfg.url.slice(0, 60) + '…');
 if (!navigator.onLine) log('⚠ Нет подключения к сети', 'warn');
 startWatch();
 flush();
