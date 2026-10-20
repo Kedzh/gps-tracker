@@ -115,6 +115,45 @@
         background:#1d2732; border:1px solid var(--line); color:var(--mut)}
   .tblwrap{overflow-x:auto; margin-top:10px; -webkit-overflow-scrolling:touch}
 
+  /* ===== стиль Leaflet под тему ===== */
+  .leaflet-container{background:#0b0f14; font-family:inherit}
+  .leaflet-bar, .leaflet-bar a{
+    background:#1d2732; color:var(--txt); border-color:var(--line);
+  }
+  .leaflet-bar a:hover{background:#243140}
+  .leaflet-bar a.leaflet-disabled{background:#151c24; color:#5b6774}
+  .leaflet-control-layers{
+    background:rgba(23,30,38,.96); color:var(--txt);
+    border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 4px 14px #0006;
+  }
+  .leaflet-control-layers-expanded{padding:9px 11px}
+  .leaflet-control-layers label{
+    display:flex; align-items:center; gap:7px; margin:4px 0;
+    font-size:13.5px; font-weight:500; color:var(--txt);
+    text-transform:none; letter-spacing:0; cursor:pointer;
+  }
+  .leaflet-control-layers input{width:auto; padding:0; border:0; background:none;
+    accent-color:var(--acc); margin:0}
+  .leaflet-control-layers-separator{background:var(--line); margin:6px 0}
+  .leaflet-control-attribution{
+    background:rgba(11,15,20,.82); color:var(--mut); font-size:10px;
+  }
+  .leaflet-control-attribution a{color:#6aa8ff}
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip{
+    background:#171e26; color:var(--txt); border:1px solid var(--line);
+    box-shadow:0 6px 18px #0008;
+  }
+  .leaflet-popup-content{margin:11px 13px; font-size:13.5px; line-height:1.5}
+  .leaflet-popup-content b{color:#fff}
+  .leaflet-popup-content a{color:#6aa8ff}
+  .leaflet-popup-close-button{color:var(--mut) !important}
+  .leaflet-tooltip{
+    background:#171e26; color:var(--txt); border:1px solid var(--line);
+    border-radius:8px; font-size:12.5px; box-shadow:0 4px 12px #0007;
+  }
+  .leaflet-tooltip:before{display:none}
+
   /* ===== телефон ===== */
   @media (max-width:600px){
     main{padding:10px}
@@ -127,6 +166,10 @@
     #map{height:52dvh; min-height:250px; border-radius:10px}
     .legend{gap:6px 10px; font-size:11.5px; margin-top:8px}
     .legend .bar{width:80px}
+    .leaflet-control-layers-expanded{padding:8px 9px; font-size:13px}
+    .leaflet-control-layers label{font-size:13px}
+    .leaflet-control-zoom a{width:34px !important; height:34px !important; line-height:34px !important}
+    .leaflet-touch .leaflet-bar a{width:34px; height:34px; line-height:34px}
 
     .stats{grid-template-columns:repeat(2,1fr); gap:7px}
     .stat{padding:8px 9px}
@@ -259,7 +302,7 @@ function save(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){
 
 let cfg = Object.assign({
   url:DEFAULT_URL, token:DEFAULT_TOKEN, sheet:'',
-  label:'', auto:true, every:60
+  label:'', auto:true, every:60, basemap:'sat'
 }, load(LS.cfg, {}));
 if (!cfg.url)   cfg.url   = DEFAULT_URL;
 if (!cfg.token) cfg.token = DEFAULT_TOKEN;
@@ -286,10 +329,52 @@ function dot(s){ el.dot.className = 'dot' + (s ? ' ' + s : ''); }
 
 /* ============ КАРТА ============ */
 const map = L.map('map', {zoomControl:true}).setView([60, 90], 4);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19,
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-}).addTo(map);
+
+/* Слои без API-ключей (по желанию — переключатель на карте) */
+const BASES = {
+  sat:   {t:'Спутник',   u:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+          a:'© Esri, Maxar, Earthstar Geographics', m:19, n:18},
+  dark:  {t:'Тёмная',    u:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+          a:'© OpenStreetMap · CARTO', s:'abcd', m:20, n:19},
+  osm:   {t:'Обычная',   u:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          a:'© OpenStreetMap', s:'', m:19},
+  topo:  {t:'Рельеф',    u:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+          a:'© OpenStreetMap · OpenTopoMap', s:'abc', m:19, n:17}
+};
+
+const tileCache = {};
+function baseLayer(key){
+  if (tileCache[key]) return tileCache[key];
+  const b = BASES[key];
+  const opts = {
+    maxZoom: b.m, attribution: b.a, subdomains: b.s || 'abc'
+  };
+  if (b.n) opts.maxNativeZoom = b.n;   // выше — картинку растягиваем, слой остаётся рабочим
+  tileCache[key] = L.tileLayer(b.u, opts);
+  return tileCache[key];
+}
+
+const labelsLayer = L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom: 18, attribution: '© Esri' }
+).addTo(map);
+
+const currentBase = BASES[cfg.basemap] ? cfg.basemap : 'sat';
+baseLayer(currentBase).addTo(map);
+
+const layerTitles = {};
+Object.keys(BASES).forEach(k => layerTitles[BASES[k].t] = k);
+L.control.layers(
+  Object.fromEntries(Object.keys(BASES).map(k => [BASES[k].t, baseLayer(k)])),
+  { 'Подписи': labelsLayer },
+  { collapsed: true, position: 'topright' }
+).addTo(map);
+
+map.on('baselayerchange', e => {
+  const key = layerTitles[e.name];
+  if (key){ cfg.basemap = key; save(LS.cfg, cfg); log('Слоёв карты: ' + e.name); }
+});
+
 const canvas = L.canvas({padding:0.4});
 const trackGroup = L.layerGroup().addTo(map);
 
