@@ -209,6 +209,7 @@
       <span class="mk"><i style="background:#f85149"></i> финиш</span>
       <span>скорость:</span><span class="bar"></span>
       <span>медленно → быстро</span>
+      <span class="pill" id="snapMode" title="Линия трека привязывается к дорогам (OSRM, данные OpenStreetMap)">прямые отрезки</span>
       <span style="margin-left:auto">автообновление: <b id="nextUpd">—</b></span>
     </div>
   </section>
@@ -275,6 +276,11 @@
         Автообновление карты (каждые N секунд)
       </label>
 
+      <label class="chk">
+        <input type="checkbox" id="iSnap" checked>
+        Привязывать линию трека к дорогам (OSRM)
+      </label>
+
       <div class="btns">
         <button id="btnSave">💾 Сохранить настройки</button>
       </div>
@@ -303,7 +309,7 @@ function save(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){
 
 let cfg = Object.assign({
   url:DEFAULT_URL, token:DEFAULT_TOKEN, sheet:'',
-  label:'', auto:true, every:60, basemap:'sat'
+  label:'', auto:true, every:60, basemap:'sat', snap:true
 }, load(LS.cfg, {}));
 if (!cfg.url)   cfg.url   = DEFAULT_URL;
 if (!cfg.token) cfg.token = DEFAULT_TOKEN;
@@ -314,7 +320,8 @@ const el = {
   sCount:$('sCount'), sDist:$('sDist'), sFrom:$('sFrom'), sTo:$('sTo'),
   sAvg:$('sAvg'), sDur:$('sDur'),
   rows:$('rows'), rowsEmpty:$('rowsEmpty'), rowsCount:$('rowsCount'),
-  label:$('iLabel'), nextUpd:$('nextUpd'), lnkSheet:$('lnkSheet')
+  label:$('iLabel'), nextUpd:$('nextUpd'), lnkSheet:$('lnkSheet'),
+  snapMode:$('snapMode')
 };
 
 function log(m, cls){
@@ -378,11 +385,13 @@ map.on('baselayerchange', e => {
 
 const canvas = L.canvas({padding:0.4});
 const trackGroup = L.layerGroup().addTo(map);
+map.attributionControl.addAttribution('Маршруты: <a href="https://project-osrm.org" target="_blank" rel="noopener">OSRM</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>');
 
 /* ============ ДАННЫЕ ============ */
 let all = [];          // последние точки из таблицы (не больше KEEP_POINTS)
 let shown = [];        // после фильтра по метке
 let lastSkipped = 0;   // сколько «скачков» выкинуто из статистики
+let lastMovingMs = 0;  // время в движении — для пересчёта ср. скорости по дорогам
 const byTime = (a, b) => (a.t ? a.t.getTime() : a.i) - (b.t ? b.t.getTime() : b.i);
 
 const p2 = n => String(n).padStart(2,'0');
@@ -449,7 +458,115 @@ function isJump(a, b){
   return haversine(a, b) / dt > 30;              // 30 м/с ≈ 108 км/ч
 }
 
+/* ===== привязка линии к дорогам (OSRM, без ключа) ===== */
+const SNAP_URL = 'https://router.project-osrm.org';   // публичный демо-сервер OSM
+const snapCache = new Map();                          // «координаты → линия по дорогам»
+let renderGen = 0;                                    // поколение отрисовки (защита от гонок)
+
+function thinRun(run, gap){
+  const res = [run[0]];
+  for (let i = 1; i < run.length; i++)
+    if (haversine(res[res.length-1], run[i]) >= gap) res.push(run[i]);
+  if (res[res.length-1] !== run[run.length-1]) res.push(run[run.length-1]);
+  return res;
+}
+
+function nearestPtIdx(pts, lat, lon){                 // ближайшая точка трека (.lat/.lon)
+  const cl = Math.cos(lat * Math.PI/180);
+  let best = 0, bd = Infinity;
+  for (let i = 0; i < pts.length; i++){
+    const dy = pts[i].lat - lat, dx = (pts[i].lon - lon) * cl;
+    const d = dx*dx + dy*dy;
+    if (d < bd){ bd = d; best = i; }
+  }
+  return best;
+}
+
+async function osrmGet(url){
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 12000);
+  try{
+    const r = await fetch(url, {signal: ctrl.signal});
+    return await r.json();
+  } finally { clearTimeout(to); }
+}
+
+/** Геометрия вдоль дорог для участка; null — если сервис недоступен. */
+async function snapRun(run){
+  const th = thinRun(run, 8);                        // 8 м — отсекаем GPS-дрожание
+  if (th.length < 2) return null;
+  const coords = th.map(p => p.lon.toFixed(6) + ',' + p.lat.toFixed(6)).join(';');
+  if (snapCache.has(coords)) return snapCache.get(coords);
+
+  let geo = null;
+  try{ // 1) match — привязка всего трека (точнее)
+    const rad = th.map(p => Math.max(15, Math.min(150, Math.round((p.acc || 30) * 1.5)))).join(';');
+    const j = await osrmGet(SNAP_URL + '/match/v1/driving/' + coords +
+      '?overview=full&geometries=geojson&radiuses=' + rad + '&steps=false');
+    if (j.code === 'Ok' && j.matchings && j.matchings.length)
+      geo = [].concat(...j.matchings.map(m => m.geometry.coordinates.map(c => [c[1], c[0]])));
+  }catch(e){}
+  if (!geo){ // 2) route — обычный маршрут по тем же точкам
+    try{
+      const j = await osrmGet(SNAP_URL + '/route/v1/driving/' + coords + '?overview=full&geometries=geojson');
+      if (j.code === 'Ok' && j.routes && j.routes.length)
+        geo = j.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+    }catch(e){}
+  }
+  if (!geo || geo.length < 2) return null;
+  if (snapCache.size > 30) snapCache.clear();         // кэш небольшой, по треку
+  snapCache.set(coords, geo);
+  return geo;
+}
+
+/** Заменяет прямые линии участка на линии вдоль дорог (окраска по скорости сохраняется). */
+async function snapRuns(runs, straightLines, gen, rawDist){
+  el.snapMode.textContent = 'привязка…';
+  let ok = 0, fail = 0, roadDist = 0;
+  for (let ri = 0; ri < runs.length; ri++){
+    if (gen !== renderGen) return;                    // трек уже перерисован — не мешаем
+    const run = runs[ri];
+    if (run.length < 2 || !straightLines[ri].length) continue;
+
+    let geo = null;
+    try { geo = await snapRun(run); } catch(e){}
+    if (gen !== renderGen) return;
+    if (!geo){ fail++; continue; }
+    ok++;
+
+    straightLines[ri].forEach(l => trackGroup.removeLayer(l));
+
+    const th = thinRun(run, 8);
+    // каждая вершина дороги «наследует» скорость ближайшей точки трека —
+    // так градиент сохраняется по всей длине, а не только между точками
+    const nearest = geo.map(g => nearestPtIdx(th, g[0], g[1]));
+    for (let k = 1; k < geo.length; k++){
+      const a = geo[k-1], b = geo[k];
+      if (a[0] === b[0] && a[1] === b[1]) continue;
+      const sp = th[nearest[k]].spd;
+      L.polyline([a, b], {
+        color: speedColor(sp), weight: 4, opacity: .9, renderer: canvas
+      }).addTo(trackGroup);
+      roadDist += haversine({lat:a[1], lon:a[0]}, {lat:b[1], lon:b[0]});
+    }
+  }
+  if (gen !== renderGen) return;
+  el.snapMode.textContent = ok ? 'по дорогам' : 'прямые отрезки';
+  if (ok && !fail)       log('🛤 Линия привязана к дорогам (OSRM)', 'ok');
+  else if (ok && fail)   log('🛤 Привязано к дорогам: ' + ok + ' уч., без дороги: ' + fail, 'warn');
+  else if (fail)         log('⚠ Привязка к дорогам недоступна — показаны прямые отрезки', 'warn');
+
+  if (ok && roadDist > 0){                             // дистанция по дорогам — честнее GPS-по-прямым
+    el.sDist.textContent = roadDist >= 1000 ? (roadDist/1000).toFixed(2) + ' км' : Math.round(roadDist) + ' м';
+    if (lastMovingMs > 0)
+      el.sAvg.textContent = ((roadDist/1000)/(lastMovingMs/3600000)).toFixed(1) + ' км/ч';
+    log('📏 По дорогам: ' + (roadDist >= 1000 ? (roadDist/1000).toFixed(2) + ' км' : Math.round(roadDist) + ' м') +
+        ' (по точкам — ' + (rawDist >= 1000 ? (rawDist/1000).toFixed(2) + ' км' : Math.round(rawDist) + ' м') + ')', 'ok');
+  }
+}
+
 function render(){
+  const gen = ++renderGen;
   shown = cfg.label ? all.filter(p => p.label === cfg.label) : all.slice();
   shown.sort(byTime);
 
@@ -457,6 +574,7 @@ function render(){
 
   if (!shown.length){
     el.state.textContent = 'нет данных';
+    el.snapMode.textContent = '—';
     ['sDist','sFrom','sTo','sAvg','sDur'].forEach(k => el[k].textContent = '—');
     el.sCount.textContent = '0';
     renderRows();
@@ -472,24 +590,25 @@ function render(){
   }
   runs.push(cur);
 
-  // рисуем сегменты с цветом по скорости
-  if (shown.length <= 1500){
-    for (const run of runs){
+  // сначала рисуем прямыми (мгновенно, и это запасной вариант),
+  // затем асинхронно привязываем каждый участок к дорогам
+  const runLines = [];
+  for (const run of runs){
+    const lines = [];
+    if (run.length <= 1500){
       for (let i = 1; i < run.length; i++){
         const a = run[i-1], b = run[i];
         const v = (a.spd != null && b.spd != null) ? (a.spd+b.spd)/2 : null;
-        L.polyline([[a.lat,a.lon],[b.lat,b.lon]], {
+        lines.push(L.polyline([[a.lat,a.lon],[b.lat,b.lon]], {
           color: speedColor(v), weight: 4, opacity: .9, renderer: canvas
-        }).addTo(trackGroup);
+        }).addTo(trackGroup));
       }
+    } else if (run.length > 1){
+      lines.push(L.polyline(run.map(p => [p.lat,p.lon]), {
+        color:'#3b82f6', weight:4, opacity:.9, renderer: canvas
+      }).addTo(trackGroup));
     }
-  } else {
-    for (const run of runs){
-      if (run.length > 1)
-        L.polyline(run.map(p => [p.lat,p.lon]), {
-          color:'#3b82f6', weight:4, opacity:.9, renderer: canvas
-        }).addTo(trackGroup);
-    }
+    runLines.push(lines);
   }
 
   // старт и финиш — по «связной» части трека (одиночные шумовые точки мимо)
@@ -514,6 +633,7 @@ function render(){
     if (dtMs !== null && dtMs > 0 && dtMs < 30*60000) movingMs += dtMs;  // паузы >30 мин не считаем
   }
   lastSkipped = skipped;
+  lastMovingMs = movingMs;
   const withT = ends.filter(p => p.t);
   const from = withT.length ? withT[0].t : null;
   const to   = withT.length ? withT[withT.length-1].t : null;
@@ -529,6 +649,9 @@ function render(){
   renderRows();
 
   map.fitBounds(L.latLngBounds(ends.map(p => [p.lat,p.lon])).pad(0.12));
+
+  if (cfg.snap) snapRuns(runs, runLines, gen, dist);  // асинхронно уводим линию на дороги
+  else el.snapMode.textContent = 'прямые отрезки';
 }
 
 function fmtDur(ms){
@@ -638,6 +761,7 @@ function loadForm(){
   $('iUrl').value = cfg.url;   $('iToken').value = cfg.token;
   $('iSheet').value = cfg.sheet || '';
   $('iEvery').value = cfg.every; $('iAuto').checked = !!cfg.auto;
+  $('iSnap').checked = cfg.snap !== false;
   if (cfg.sheet) el.lnkSheet.href = cfg.sheet;
 }
 $('btnSave').onclick = () => {
@@ -646,6 +770,7 @@ $('btnSave').onclick = () => {
   cfg.sheet = $('iSheet').value.trim();
   cfg.every = Math.max(10, parseInt($('iEvery').value,10) || 60);
   cfg.auto  = $('iAuto').checked;
+  cfg.snap  = $('iSnap').checked;
   save(LS.cfg, cfg);
   if (cfg.sheet) el.lnkSheet.href = cfg.sheet;
   log('Настройки сохранены', 'ok');
