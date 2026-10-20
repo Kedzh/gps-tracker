@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Трек из Google Таблицы</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{
+    --bg:#0f141a; --card:#171e26; --line:#25303c;
+    --txt:#e6edf3; --mut:#8b98a5;
+    --ok:#2ea043; --warn:#d29922; --err:#f85149; --acc:#3b82f6;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--txt);
+    font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+    padding-bottom:40px;
+  }
+  header{
+    position:sticky; top:0; z-index:1000;
+    background:linear-gradient(180deg,#131a22,#131a22e6);
+    backdrop-filter:blur(6px); border-bottom:1px solid var(--line);
+    padding:14px 16px; display:flex; align-items:center; gap:10px;
+  }
+  header h1{font-size:17px; margin:0; font-weight:650; flex:1}
+  header a{color:#6aa8ff; font-size:14px; text-decoration:none; font-weight:600}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--mut);box-shadow:0 0 0 4px #8b98a522}
+  .dot.on{background:var(--ok); box-shadow:0 0 0 4px #2ea04333; animation:pulse 1.6s infinite}
+  .dot.err{background:var(--err); box-shadow:0 0 0 4px #f8514933}
+  @keyframes pulse{50%{opacity:.45}}
+
+  main{max-width:960px; margin:0 auto; padding:14px}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:14px}
+  .card h2{
+    margin:0 0 10px; font-size:12px; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--mut); font-weight:700;
+  }
+  #map{
+    height:58vh; min-height:320px; border-radius:12px;
+    border:1px solid var(--line); background:#0b0f14;
+  }
+  .legend{
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    margin-top:10px; font-size:12px; color:var(--mut);
+  }
+  .bar{height:10px; width:140px; border-radius:6px;
+       background:linear-gradient(90deg,hsl(220,80%,55%),hsl(110,80%,55%),hsl(0,80%,55%))}
+  .mk{display:inline-flex; align-items:center; gap:5px}
+  .mk i{width:11px; height:11px; border-radius:50%; display:inline-block}
+
+  .stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px}
+  .stat{background:#10161d; border:1px solid var(--line); border-radius:10px; padding:10px 11px}
+  .stat b{display:block; font-size:11px; color:var(--mut); font-weight:600; margin-bottom:3px}
+  .stat span{font-size:19px; font-weight:650; font-variant-numeric:tabular-nums}
+
+  .btns{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px}
+  button, .lnk{
+    border:1px solid var(--line); background:#1d2732; color:var(--txt);
+    border-radius:10px; padding:11px 14px; font-size:15px; font-weight:600;
+    cursor:pointer; text-decoration:none; display:inline-flex;
+    align-items:center; justify-content:center; gap:6px; flex:1 1 auto;
+    min-width:130px; transition:.15s;
+  }
+  button:hover,.lnk:hover{background:#243140}
+  button.primary{background:var(--acc); border-color:#3b82f680}
+  button.primary:hover{background:#2f74e6}
+  button:disabled{opacity:.5; cursor:not-allowed}
+
+  label{display:block; font-size:12px; color:var(--mut); margin:10px 0 4px; font-weight:600}
+  input, select{
+    width:100%; background:#10161d; color:var(--txt);
+    border:1px solid var(--line); border-radius:9px;
+    padding:10px 11px; font-size:14px; font-family:inherit;
+  }
+  input:focus, select:focus{outline:none; border-color:var(--acc)}
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+  label.chk{
+    display:flex; align-items:center; gap:9px; margin-top:14px;
+    font-size:14px; color:var(--txt); font-weight:600; cursor:pointer;
+  }
+  label.chk input{width:18px; height:18px; accent-color:var(--acc); margin:0}
+  .hint{font-size:12.5px; color:var(--mut); margin-top:8px}
+  details summary{
+    cursor:pointer; font-size:12px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--mut); font-weight:700;
+  }
+  table{width:100%; border-collapse:collapse; margin-top:10px; font-size:13.5px}
+  th,td{padding:7px 8px; text-align:left; border-bottom:1px solid var(--line)}
+  th{color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.05em}
+  tbody tr{cursor:pointer}
+  tbody tr:hover{background:#1d2732}
+  td.num{font-variant-numeric:tabular-nums}
+  .empty{text-align:center; color:var(--mut); padding:22px 10px; font-size:14px}
+  #log{
+    font:12.5px/1.6 ui-monospace,Consolas,monospace;
+    max-height:150px; overflow:auto; white-space:pre-wrap;
+    background:#0b0f14; border:1px solid var(--line);
+    border-radius:10px; padding:9px 11px; color:#9fb0c0; margin-top:10px;
+  }
+  #log .t{color:#4d5b6a}
+  #log .ok{color:#7ee2a8}
+  #log .err{color:#ff9d97}
+  #log .warn{color:#ffd479}
+  .pill{display:inline-block; font-size:11px; padding:2px 8px; border-radius:20px;
+        background:#1d2732; border:1px solid var(--line); color:var(--mut)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🗺 Трек из Google Таблицы</h1>
+  <a href="index.html">📍 Запись</a>
+  <span id="dot" class="dot"></span>
+</header>
+
+<main>
+
+  <section class="card">
+    <h2>Карта <span class="pill" id="state">загрузка…</span></h2>
+    <div id="map"></div>
+    <div class="legend">
+      <span class="mk"><i style="background:#2ea043"></i> старт</span>
+      <span class="mk"><i style="background:#f85149"></i> финиш</span>
+      <span>скорость:</span><span class="bar"></span>
+      <span>медленно → быстро</span>
+      <span style="margin-left:auto">автообновление: <b id="nextUpd">—</b></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Трек</h2>
+    <div class="stats">
+      <div class="stat"><b>Точек</b><span id="sCount">0</span></div>
+      <div class="stat"><b>Дистанция</b><span id="sDist">—</span></div>
+      <div class="stat"><b>Начало</b><span id="sFrom" style="font-size:15px">—</span></div>
+      <div class="stat"><b>Финиш</b><span id="sTo" style="font-size:15px">—</span></div>
+      <div class="stat"><b>Ср. скорость</b><span id="sAvg">—</span></div>
+      <div class="stat"><b>В пути</b><span id="sDur">—</span></div>
+    </div>
+    <div class="btns">
+      <button class="primary" id="btnLoad">🔄 Обновить карту</button>
+      <a class="lnk" id="lnkSheet" href="#" target="_blank" rel="noopener">📊 Открыть таблицу</a>
+    </div>
+    <div id="log"></div>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Последние точки <span class="pill" id="rowsCount">0</span></summary>
+      <table>
+        <thead>
+          <tr><th>Время</th><th>Широта</th><th>Долгота</th><th>км/ч</th><th>м</th><th>Метка</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="rowsEmpty" hidden>Нет данных</div>
+      <p class="hint">Клик по строке — приблизить карту к этой точке.</p>
+    </details>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>⚙ Настройки</summary>
+
+      <label for="iUrl">URL веб-приложения Apps Script (…/exec)</label>
+      <input id="iUrl" autocomplete="off">
+
+      <label for="iToken">Секретный токен</label>
+      <input id="iToken" autocomplete="off">
+
+      <label for="iSheet">Ссылка на Google Таблицу</label>
+      <input id="iSheet" placeholder="https://docs.google.com/spreadsheets/d/XXXX/edit" autocomplete="off">
+
+      <div class="row2">
+        <div>
+          <label for="iLabel">Показывать метку</label>
+          <select id="iLabel"><option value="">все точки</option></select>
+        </div>
+        <div>
+          <label for="iEvery">Автообновление, сек</label>
+          <input id="iEvery" type="number" min="10" max="3600" value="60">
+        </div>
+      </div>
+
+      <label class="chk">
+        <input type="checkbox" id="iAuto" checked>
+        Автообновление карты (каждые N секунд)
+      </label>
+
+      <div class="btns">
+        <button id="btnSave">💾 Сохранить настройки</button>
+      </div>
+      <p class="hint">
+        Карта читает те же данные, что и записывает приложение: GET-запрос
+        <code>?action=data</code> к скрипту Apps Script. Если в журнале
+        «нет points» — обновите Code.gs и перевыпустите развёртывание.
+      </p>
+    </details>
+  </section>
+
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+"use strict";
+
+/* ============ НАСТРОЙКИ ============ */
+const DEFAULT_URL   = 'https://script.google.com/macros/s/AKfycbysHXi4x5AcVTVm3u-yQOG6-n7lMiHl4k8C3gJH185HVoF3Dl00F053QVxeMX3G27qdiA/exec';
+const DEFAULT_TOKEN = 'school-2026';
+const LS = { cfg:'gpstrk_view_cfg' };
+
+function load(k, d){ try{ const v = JSON.parse(localStorage.getItem(k)); return v ?? d; }catch(e){ return d; } }
+function save(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+
+let cfg = Object.assign({
+  url:DEFAULT_URL, token:DEFAULT_TOKEN, sheet:'',
+  label:'', auto:true, every:60
+}, load(LS.cfg, {}));
+if (!cfg.url)   cfg.url   = DEFAULT_URL;
+if (!cfg.token) cfg.token = DEFAULT_TOKEN;
+
+const $ = id => document.getElementById(id);
+const el = {
+  dot:$('dot'), state:$('state'), log:$('log'),
+  sCount:$('sCount'), sDist:$('sDist'), sFrom:$('sFrom'), sTo:$('sTo'),
+  sAvg:$('sAvg'), sDur:$('sDur'),
+  rows:$('rows'), rowsEmpty:$('rowsEmpty'), rowsCount:$('rowsCount'),
+  label:$('iLabel'), nextUpd:$('nextUpd'), lnkSheet:$('lnkSheet')
+};
+
+function log(m, cls){
+  const t = new Date().toLocaleTimeString('ru-RU');
+  const d = document.createElement('div');
+  d.innerHTML = '<span class="t">[' + t + ']</span> <span class="' + (cls||'') + '"></span>';
+  d.lastChild.textContent = m;
+  el.log.appendChild(d);
+  el.log.scrollTop = el.log.scrollHeight;
+  while (el.log.children.length > 100) el.log.removeChild(el.log.firstChild);
+}
+function dot(s){ el.dot.className = 'dot' + (s ? ' ' + s : ''); }
+
+/* ============ КАРТА ============ */
+const map = L.map('map', {zoomControl:true}).setView([60, 90], 4);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+const canvas = L.canvas({padding:0.4});
+const trackGroup = L.layerGroup().addTo(map);
+
+/* ============ ДАННЫЕ ============ */
+let all = [];          // все точки из таблицы
+let shown = [];        // после фильтра по метке
+
+const p2 = n => String(n).padStart(2,'0');
+function fmtTime(d){
+  if (!(d instanceof Date) || isNaN(d)) return String(d ?? '—');
+  return p2(d.getDate())+'.'+p2(d.getMonth()+1)+'.'+d.getFullYear()+' '+
+         p2(d.getHours())+':'+p2(d.getMinutes())+':'+p2(d.getSeconds());
+}
+function parseTime(s){
+  if (s instanceof Date) return s;
+  if (typeof s !== 'string') return null;
+  const m = s.trim().match(/^(\d{2})\.(\d{2})\.(\d{4})[ ,]+(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) { const t = Date.parse(s); return isNaN(t) ? null : new Date(t); }
+  return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5], +(m[6]||0));
+}
+function haversine(a, b){
+  const R = 6371000, rad = Math.PI/180;
+  const dLat = (b.lat-a.lat)*rad, dLon = (b.lon-a.lon)*rad;
+  const s = Math.sin(dLat/2)**2 + Math.cos(a.lat*rad)*Math.cos(b.lat*rad)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+}
+function speedColor(v){
+  if (v == null || !isFinite(v)) return '#3b82f6';
+  const max = 15;                                   // 15 м/с ≈ 54 км/ч — верх шкалы
+  const t = Math.max(0, Math.min(1, v/max));
+  const h = 220 - 220*t;                            // синий → красный
+  return 'hsl(' + h.toFixed(0) + ',80%,55%)';
+}
+
+function normalize(raw){
+  return (Array.isArray(raw) ? raw : []).map((p, i) => ({
+    i,
+    t: parseTime(p.time),
+    lat: +p.lat, lon: +p.lon,
+    acc: p.acc != null && isFinite(p.acc) ? +p.acc : null,
+    spd: p.speed != null && isFinite(p.speed) ? +p.speed : null,
+    alt: p.alt != null && isFinite(p.alt) ? +p.alt : null,
+    head: p.head != null && isFinite(p.head) ? +p.head : null,
+    label: p.label || '',
+    device: p.device || ''
+  })).filter(p => isFinite(p.lat) && isFinite(p.lon));
+}
+
+function fillLabels(){
+  const cur = cfg.label;
+  const set = [...new Set(all.map(p => p.label).filter(Boolean))].sort((a,b) => a.localeCompare(b, 'ru'));
+  el.label.innerHTML = '<option value="">все точки</option>' +
+    set.map(l => '<option value="' + l.replace(/"/g,'&quot;') + '">' + l + '</option>').join('');
+  el.label.value = set.includes(cur) ? cur : '';
+  cfg.label = el.label.value;
+}
+
+function render(){
+  shown = cfg.label ? all.filter(p => p.label === cfg.label) : all.slice();
+  shown.sort((a,b) => (a.t ? a.t.getTime() : a.i) - (b.t ? b.t.getTime() : b.i));
+
+  trackGroup.clearLayers();
+
+  if (!shown.length){
+    el.state.textContent = 'нет данных';
+    ['sDist','sFrom','sTo','sAvg','sDur'].forEach(k => el[k].textContent = '—');
+    el.sCount.textContent = '0';
+    renderRows();
+    return;
+  }
+
+  // сегменты с цветом по скорости
+  if (shown.length > 1){
+    if (shown.length <= 1500){
+      for (let i = 1; i < shown.length; i++){
+        const a = shown[i-1], b = shown[i];
+        const v = (a.spd != null && b.spd != null) ? (a.spd+b.spd)/2 : null;
+        L.polyline([[a.lat,a.lon],[b.lat,b.lon]], {
+          color: speedColor(v), weight: 4, opacity: .9, renderer: canvas
+        }).addTo(trackGroup);
+      }
+    } else {
+      L.polyline(shown.map(p => [p.lat,p.lon]), {
+        color:'#3b82f6', weight:4, opacity:.9, renderer: canvas
+      }).addTo(trackGroup);
+    }
+  }
+
+  // старт и финиш
+  const first = shown[0], last = shown[shown.length-1];
+  L.circleMarker([first.lat, first.lon], {radius:8, color:'#fff', weight:2,
+    fillColor:'#2ea043', fillOpacity:1}).addTo(trackGroup)
+    .bindPopup(popupHtml(first, 'Старт'));
+  if (shown.length > 1)
+    L.circleMarker([last.lat, last.lon], {radius:8, color:'#fff', weight:2,
+      fillColor:'#f85149', fillOpacity:1}).addTo(trackGroup)
+      .bindPopup(popupHtml(last, 'Финиш'));
+
+  // статистика
+  let dist = 0, movingMs = 0;
+  for (let i = 1; i < shown.length; i++){
+    dist += haversine(shown[i-1], shown[i]);
+    if (shown[i].t && shown[i-1].t){
+      const dt = shown[i].t - shown[i-1].t;
+      if (dt > 0 && dt < 30*60000) movingMs += dt;    // паузы >30 мин не считаем
+    }
+  }
+  const withT = shown.filter(p => p.t);
+  const from = withT.length ? withT[0].t : null;
+  const to   = withT.length ? withT[withT.length-1].t : null;
+  const totalMs = (from && to) ? (to - from) : 0;
+
+  el.sCount.textContent = shown.length;
+  el.sDist.textContent  = dist >= 1000 ? (dist/1000).toFixed(2) + ' км' : Math.round(dist) + ' м';
+  el.sFrom.textContent  = from ? fmtTime(from) : '—';
+  el.sTo.textContent    = to   ? fmtTime(to)   : '—';
+  el.sAvg.textContent   = movingMs > 0 ? ((dist/1000)/(movingMs/3600000)).toFixed(1) + ' км/ч' : '—';
+  el.sDur.textContent   = fmtDur(totalMs);
+  el.state.textContent  = shown.length + ' тчк';
+  renderRows();
+
+  map.fitBounds(L.latLngBounds(shown.map(p => [p.lat,p.lon])).pad(0.12));
+}
+
+function fmtDur(ms){
+  if (!ms || ms < 0) return '—';
+  const h = Math.floor(ms/3600000), m = Math.floor(ms%3600000/60000);
+  return (h ? h + ' ч ' : '') + m + ' мин';
+}
+function popupHtml(p, title){
+  const rows = [
+    ['Время', p.t ? fmtTime(p.t) : '—'],
+    ['Скорость', p.spd != null ? (p.spd*3.6).toFixed(1) + ' км/ч' : '—'],
+    ['Высота', p.alt != null ? p.alt + ' м' : '—'],
+    ['Точность', p.acc != null ? '±' + Math.round(p.acc) + ' м' : '—'],
+    ['Метка', p.label || '—'],
+    ['Устройство', p.device || '—']
+  ];
+  return '<b>' + (title || 'Точка') + '</b><br>' +
+    rows.map(r => r[0] + ': ' + r[1]).join('<br>') +
+    '<br><a href="https://www.google.com/maps?q=' + p.lat + ',' + p.lon +
+    '" target="_blank" rel="noopener">открыть в Google Maps</a>';
+}
+
+function renderRows(){
+  const last = shown.slice(-50).reverse();
+  el.rowsCount.textContent = shown.length;
+  el.rowsEmpty.hidden = !!last.length;
+  el.rows.innerHTML = last.map(p =>
+    '<tr data-i="' + p.i + '">' +
+    '<td>' + (p.t ? fmtTime(p.t) : '—') + '</td>' +
+    '<td class="num">' + p.lat.toFixed(6) + '</td>' +
+    '<td class="num">' + p.lon.toFixed(6) + '</td>' +
+    '<td class="num">' + (p.spd != null ? (p.spd*3.6).toFixed(1) : '—') + '</td>' +
+    '<td class="num">' + (p.acc != null ? '±' + Math.round(p.acc) : '—') + '</td>' +
+    '<td>' + (p.label || '') + '</td></tr>'
+  ).join('');
+}
+el.rows.addEventListener('click', e => {
+  const tr = e.target.closest('tr');
+  if (!tr) return;
+  const p = all.find(x => x.i === +tr.dataset.i);
+  if (!p) return;
+  map.flyTo([p.lat, p.lon], Math.max(map.getZoom(), 16), {duration:.6});
+  L.popup().setLatLng([p.lat, p.lon]).setContent(popupHtml(p)).openOn(map);
+});
+
+/* ============ ЗАГРУЗКА ============ */
+let loading = false;
+async function loadTrack(){
+  if (loading) return;
+  if (!cfg.url){ log('⚠ URL не задан', 'warn'); dot('err'); return; }
+  loading = true;
+  el.state.textContent = 'загрузка…';
+  try{
+    const sep = cfg.url.includes('?') ? '&' : '?';
+    const u = cfg.url + sep + 'action=data&token=' + encodeURIComponent(cfg.token);
+    const res = await fetch(u, {redirect:'follow'});
+    const txt = await res.text();
+    let out;
+    try{ out = JSON.parse(txt); }
+    catch(e){ throw new Error('ответ не JSON — проверьте URL (должен быть …/exec)'); }
+
+    if (!out || out.ok !== true) throw new Error((out && out.error) || ('HTTP ' + res.status));
+    if (!Array.isArray(out.points)) throw new Error('нет points — обновите Code.gs в Apps Script');
+
+    all = normalize(out.points);
+    fillLabels();
+    render();
+    dot('on');
+    log('✔ Загружено точек: ' + all.length + (out.updated ? ' (обновлено ' + out.updated + ')' : ''), 'ok');
+  }catch(err){
+    dot('err');
+    el.state.textContent = 'ошибка';
+    log('✘ ' + err.message, 'err');
+  }finally{
+    loading = false;
+    schedule();
+  }
+}
+
+/* ============ АВТООБНОВЛЕНИЕ ============ */
+let timer = null, tick = null;
+function schedule(){
+  clearInterval(timer); clearInterval(tick);
+  if (!cfg.auto){ el.nextUpd.textContent = 'выкл'; return; }
+  let left = cfg.every;
+  el.nextUpd.textContent = left + ' с';
+  tick = setInterval(() => {
+    left--;
+    el.nextUpd.textContent = Math.max(left, 0) + ' с';
+  }, 1000);
+  timer = setInterval(() => { left = cfg.every; loadTrack(); }, cfg.every * 1000);
+}
+
+/* ============ НАСТРОЙКИ UI ============ */
+function loadForm(){
+  $('iUrl').value = cfg.url;   $('iToken').value = cfg.token;
+  $('iSheet').value = cfg.sheet || '';
+  $('iEvery').value = cfg.every; $('iAuto').checked = !!cfg.auto;
+  if (cfg.sheet) el.lnkSheet.href = cfg.sheet;
+}
+$('btnSave').onclick = () => {
+  cfg.url   = $('iUrl').value.trim()   || DEFAULT_URL;
+  cfg.token = $('iToken').value.trim() || DEFAULT_TOKEN;
+  cfg.sheet = $('iSheet').value.trim();
+  cfg.every = Math.max(10, parseInt($('iEvery').value,10) || 60);
+  cfg.auto  = $('iAuto').checked;
+  save(LS.cfg, cfg);
+  if (cfg.sheet) el.lnkSheet.href = cfg.sheet;
+  log('Настройки сохранены', 'ok');
+  schedule();
+  loadTrack();
+};
+$('btnLoad').onclick = loadTrack;
+el.label.onchange = () => { cfg.label = el.label.value; save(LS.cfg, cfg); render(); };
+window.addEventListener('online', loadTrack);
+
+/* ============ СТАРТ ============ */
+loadForm();
+log('Читаю таблицу через ' + cfg.url.slice(0, 55) + '…');
+loadTrack();
+</script>
+</body>
+</html>

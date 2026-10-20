@@ -19,9 +19,46 @@ const HEADERS = [
   'Курс, °', 'Метка', 'Устройство'
 ];
 
-/** Проверка, что веб-приложение живо (откройте URL в браузере). */
-function doGet() {
+/** Проверка, что веб-приложение живо (откройте URL в браузере).
+ *  ?action=data&token=XXX — отдать точки картой (track.html). */
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+
+  if (p.action === 'data') {
+    if (TOKEN && p.token !== TOKEN) return json_({ ok: false, error: 'Неверный токен' });
+    try {
+      return json_({ ok: true, points: readPoints_(), updated: now_() });
+    } catch (err) {
+      return json_({ ok: false, error: String(err) });
+    }
+  }
   return json_({ ok: true, app: 'gps-tracker', sheet: SHEET_NAME });
+}
+
+/** Все точки листа в JSON для карты. */
+function readPoints_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  if (!sh || sh.getLastRow() < 2) return [];
+
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, HEADERS.length).getValues();
+  return rows
+    .map(r => ({
+      time:    fmtDate_(r[0]),
+      lat:     r[1], lon:    r[2], acc:   r[3],
+      speed:   r[4],                      // м/с
+      alt:     r[6], head:   r[7],
+      label:   r[8], device: r[9]
+    }))
+    .filter(p => isFinite(p.lat) && isFinite(p.lon));
+}
+
+function fmtDate_(d) {
+  if (d instanceof Date) return Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm:ss');
+  return d === undefined || d === null ? '' : String(d);
+}
+
+function now_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm:ss');
 }
 
 /** Приём точек от приложения. */
