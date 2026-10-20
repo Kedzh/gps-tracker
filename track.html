@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#131a22">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="GPS трек">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Трек из Google Таблицы</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
@@ -15,13 +20,17 @@
   body{
     margin:0; background:var(--bg); color:var(--txt);
     font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
-    padding-bottom:40px;
+    padding-bottom:calc(40px + env(safe-area-inset-bottom));
+    -webkit-text-size-adjust:100%;
+    -webkit-tap-highlight-color:transparent;
   }
+  button, .lnk, summary, label.chk, tbody tr{touch-action:manipulation}
   header{
     position:sticky; top:0; z-index:1000;
     background:linear-gradient(180deg,#131a22,#131a22e6);
     backdrop-filter:blur(6px); border-bottom:1px solid var(--line);
     padding:14px 16px; display:flex; align-items:center; gap:10px;
+    padding-top:calc(14px + env(safe-area-inset-top));
   }
   header h1{font-size:17px; margin:0; font-weight:650; flex:1}
   header a{color:#6aa8ff; font-size:14px; text-decoration:none; font-weight:600}
@@ -37,7 +46,7 @@
     text-transform:uppercase; color:var(--mut); font-weight:700;
   }
   #map{
-    height:58vh; min-height:320px; border-radius:12px;
+    height:58vh; height:60dvh; min-height:300px; border-radius:12px;
     border:1px solid var(--line); background:#0b0f14;
   }
   .legend{
@@ -94,7 +103,7 @@
   .empty{text-align:center; color:var(--mut); padding:22px 10px; font-size:14px}
   #log{
     font:12.5px/1.6 ui-monospace,Consolas,monospace;
-    max-height:150px; overflow:auto; white-space:pre-wrap;
+    max-height:150px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere;
     background:#0b0f14; border:1px solid var(--line);
     border-radius:10px; padding:9px 11px; color:#9fb0c0; margin-top:10px;
   }
@@ -104,6 +113,39 @@
   #log .warn{color:#ffd479}
   .pill{display:inline-block; font-size:11px; padding:2px 8px; border-radius:20px;
         background:#1d2732; border:1px solid var(--line); color:var(--mut)}
+  .tblwrap{overflow-x:auto; margin-top:10px; -webkit-overflow-scrolling:touch}
+
+  /* ===== телефон ===== */
+  @media (max-width:600px){
+    main{padding:10px}
+    .card{padding:12px; border-radius:12px; margin-bottom:10px}
+    .card h2{font-size:11px}
+    header{padding:11px 10px; padding-top:calc(11px + env(safe-area-inset-top)); gap:8px}
+    header h1{font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+    header a{font-size:13px; white-space:nowrap}
+
+    #map{height:52dvh; min-height:250px; border-radius:10px}
+    .legend{gap:6px 10px; font-size:11.5px; margin-top:8px}
+    .legend .bar{width:80px}
+
+    .stats{grid-template-columns:repeat(2,1fr); gap:7px}
+    .stat{padding:8px 9px}
+    .stat span{font-size:17px}
+
+    .btns{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px}
+    .btns button, .btns .lnk{min-width:0; width:100%; padding:13px 6px; font-size:15px}
+
+    .row2{grid-template-columns:1fr; gap:0}
+    input, select{font-size:16px; padding:12px 11px}      /* 16px = iOS не зумит поле */
+    label{margin:12px 0 5px; font-size:13px}
+    label.chk{font-size:14px}
+
+    details summary{padding:9px 0; font-size:13px}
+    table{min-width:520px}
+    th,td{padding:8px 7px; font-size:13px}
+    #log{max-height:130px; font-size:12px}
+    .hint{font-size:12px}
+  }
 </style>
 </head>
 <body>
@@ -148,12 +190,14 @@
   <section class="card">
     <details>
       <summary>Последние точки <span class="pill" id="rowsCount">0</span></summary>
+      <div class="tblwrap">
       <table>
         <thead>
           <tr><th>Время</th><th>Широта</th><th>Долгота</th><th>км/ч</th><th>м</th><th>Метка</th></tr>
         </thead>
         <tbody id="rows"></tbody>
       </table>
+      </div>
       <div class="empty" id="rowsEmpty" hidden>Нет данных</div>
       <p class="hint">Клик по строке — приблизить карту к этой точке.</p>
     </details>
