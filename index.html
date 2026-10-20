@@ -101,6 +101,11 @@
   }
   .hint{font-size:12.5px; color:var(--mut); margin-top:6px}
   a{color:#6aa8ff}
+  label.chk{
+    display:flex; align-items:center; gap:9px; margin-top:14px;
+    font-size:14px; color:var(--txt); font-weight:600; cursor:pointer;
+  }
+  label.chk input{width:18px; height:18px; accent-color:var(--acc); margin:0}
   .pill{
     display:inline-block; font-size:11px; padding:2px 8px; border-radius:20px;
     background:#1d2732; border:1px solid var(--line); color:var(--mut);
@@ -184,14 +189,19 @@
 
       <div class="row2">
         <div>
-          <label for="iInterval">Интервал трека, сек</label>
-          <input id="iInterval" type="number" min="1" max="3600" value="15">
+          <label for="iInterval">Интервал записи, сек</label>
+          <input id="iInterval" type="number" min="1" max="3600" value="60">
         </div>
         <div>
           <label for="iMaxAcc">Порог точности, м (0 — не фильтровать)</label>
           <input id="iMaxAcc" type="number" min="0" max="1000" value="50">
         </div>
       </div>
+
+      <label class="chk">
+        <input type="checkbox" id="iAuto" checked>
+        Автозапись: начинать трек сразу при открытии страницы
+      </label>
 
       <div class="btns">
         <button id="btnSave">💾 Сохранить настройки</button>
@@ -223,11 +233,24 @@ function save(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){
 const DEFAULT_URL   = 'https://script.google.com/macros/s/AKfycbysHXi4x5AcVTVm3u-yQOG6-n7lMiHl4k8C3gJH185HVoF3Dl00F053QVxeMX3G27qdiA/exec';
 const DEFAULT_TOKEN = 'school-2026';
 
+const CFG_VERSION = 2;   // при росте версии применяем новые значения по умолчанию
+
 let cfg = Object.assign({
   url:DEFAULT_URL, token:DEFAULT_TOKEN, sheet:'',
   device:'', label:'',
-  interval:15, maxAcc:50
+  interval:60, maxAcc:50, autostart:true
 }, load(LS.cfg, {}));
+
+if ((load('gpstrk_cfgv', 0) || 0) < CFG_VERSION){
+  cfg.interval = 60;          // запись каждую минуту
+  cfg.autostart = true;       // и автоматически, без кнопок
+  save(LS.cfg, cfg);
+  save('gpstrk_cfgv', CFG_VERSION);
+}
+
+// пустые сохранённые значения не должны перекрывать вшитые по умолчанию
+if (!cfg.url)   cfg.url   = DEFAULT_URL;
+if (!cfg.token) cfg.token = DEFAULT_TOKEN;
 
 let queue = load(LS.queue, []);          // точки, ждущие отправки
 let stat  = Object.assign({sent:0, track:0, last:''}, load(LS.stat, {}));
@@ -290,6 +313,7 @@ function loadForm(){
   $('iSheet').value = cfg.sheet; $('iDevice').value = cfg.device;
   $('iLabel').value = cfg.label;
   $('iInterval').value = cfg.interval; $('iMaxAcc').value = cfg.maxAcc;
+  $('iAuto').checked = !!cfg.autostart;
   if (cfg.sheet) el.lnkSheet.href = cfg.sheet;
 }
 function saveForm(){
@@ -298,8 +322,9 @@ function saveForm(){
   cfg.sheet  = $('iSheet').value.trim();
   cfg.device = $('iDevice').value.trim();
   cfg.label  = $('iLabel').value.trim();
-  cfg.interval = Math.max(1, parseInt($('iInterval').value,10) || 15);
+  cfg.interval = Math.max(1, parseInt($('iInterval').value,10) || 60);
   cfg.maxAcc   = Math.max(0, parseInt($('iMaxAcc').value,10) || 0);
+  cfg.autostart = $('iAuto').checked;
   save(LS.cfg, cfg);
   if (cfg.sheet) el.lnkSheet.href = cfg.sheet;
   log('Настройки сохранены', 'ok');
@@ -414,13 +439,13 @@ function writeOne(){
   log('Точка записана в очередь', 'ok');
 }
 
-function startTrack(){
-  saveForm();
+function startTrack(quiet){
+  if (!quiet) saveForm();
   tracking = true; lastRec = 0;
   el.btnTrack.disabled = true; el.btnStop.disabled = false;
   requestWake(); startWatch();
   dot('on');
-  log('▶ Трек запущен: интервал ' + cfg.interval + ' с' +
+  log((quiet ? '▶ Автозапись: каждые ' : '▶ Трек запущен: интервал ') + cfg.interval + ' с' +
       (cfg.maxAcc > 0 ? ', порог точности ' + cfg.maxAcc + ' м' : ''), 'ok');
 }
 function stopTrack(){
@@ -441,7 +466,7 @@ function defaultDevice(){
 
 /* ============ СОБЫТИЯ ============ */
 el.btnOne.onclick   = writeOne;
-el.btnTrack.onclick = startTrack;
+el.btnTrack.onclick = () => startTrack(false);
 el.btnStop.onclick  = stopTrack;
 el.btnFlush.onclick = () => { log('Принудительная отправка…'); flush(); };
 el.btnSave.onclick  = saveForm;
@@ -467,7 +492,12 @@ log('Приложение запущено. URL Apps Script уже задан: '
 if (!cfg.url) log('⚠ URL веб-приложения не задан — точки будут копиться локально', 'warn');
 else log('Endpoint: ' + cfg.url.slice(0, 60) + '…');
 if (!navigator.onLine) log('⚠ Нет подключения к сети', 'warn');
-startWatch();
+if (cfg.autostart){
+  log('Автозапись включена — разрешите доступ к геолокации, точка уйдёт в таблицу сразу', 'warn');
+  startTrack(true);
+} else {
+  startWatch();
+}
 flush();
 </script>
 </body>
