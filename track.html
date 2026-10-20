@@ -296,6 +296,7 @@
 const DEFAULT_URL   = 'https://script.google.com/macros/s/AKfycbysHXi4x5AcVTVm3u-yQOG6-n7lMiHl4k8C3gJH185HVoF3Dl00F053QVxeMX3G27qdiA/exec';
 const DEFAULT_TOKEN = 'school-2026';
 const LS = { cfg:'gpstrk_view_cfg' };
+const KEEP_POINTS = 60;              // сколько последних точек показывать (как в таблице)
 
 function load(k, d){ try{ const v = JSON.parse(localStorage.getItem(k)); return v ?? d; }catch(e){ return d; } }
 function save(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
@@ -379,9 +380,10 @@ const canvas = L.canvas({padding:0.4});
 const trackGroup = L.layerGroup().addTo(map);
 
 /* ============ ДАННЫЕ ============ */
-let all = [];          // все точки из таблицы
+let all = [];          // последние точки из таблицы (не больше KEEP_POINTS)
 let shown = [];        // после фильтра по метке
 let lastSkipped = 0;   // сколько «скачков» выкинуто из статистики
+const byTime = (a, b) => (a.t ? a.t.getTime() : a.i) - (b.t ? b.t.getTime() : b.i);
 
 const p2 = n => String(n).padStart(2,'0');
 function fmtTime(d){
@@ -449,7 +451,7 @@ function isJump(a, b){
 
 function render(){
   shown = cfg.label ? all.filter(p => p.label === cfg.label) : all.slice();
-  shown.sort((a,b) => (a.t ? a.t.getTime() : a.i) - (b.t ? b.t.getTime() : b.i));
+  shown.sort(byTime);
 
   trackGroup.clearLayers();
 
@@ -550,7 +552,7 @@ function popupHtml(p, title){
 }
 
 function renderRows(){
-  const last = shown.slice(-50).reverse();
+  const last = shown.slice(-KEEP_POINTS).reverse();
   el.rowsCount.textContent = shown.length;
   el.rowsEmpty.hidden = !!last.length;
   el.rows.innerHTML = last.map(p =>
@@ -591,7 +593,16 @@ async function loadTrack(){
     if (!out || out.ok !== true) throw new Error((out && out.error) || ('HTTP ' + res.status));
     if (!Array.isArray(out.points)) throw new Error('нет points — обновите Code.gs в Apps Script');
 
-    all = normalize(out.points);
+    let raw = normalize(out.points);
+    const total = raw.length;
+    if (total > KEEP_POINTS){
+      raw.sort(byTime);
+      all = raw.slice(-KEEP_POINTS);
+      log('ℹ в таблице ' + total + ' точек — показаны последние ' + KEEP_POINTS +
+          ' (чтобы в таблице было ровно ' + KEEP_POINTS + ' — обновите Code.gs)', 'warn');
+    } else {
+      all = raw;
+    }
     fillLabels();
     render();
     if (lastSkipped) log('⚠ исключено «скачков» из дистанции: ' + lastSkipped +

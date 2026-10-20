@@ -12,6 +12,7 @@
 
 const TOKEN = 'school-2026';          // общий пароль (пустая строка = без проверки)
 const SHEET_NAME = 'GPS';             // имя листа (создастся автоматически)
+const KEEP_ROWS = 60;                 // сколько ПОСЛЕДНИХ точек хранить в таблице
 
 const HEADERS = [
   'Время', 'Широта', 'Долгота', 'Точность, м',
@@ -35,12 +36,16 @@ function doGet(e) {
   return json_({ ok: true, app: 'gps-tracker', sheet: SHEET_NAME });
 }
 
-/** Все точки листа в JSON для карты. */
+/** Все точки листа в JSON для карты (только последние KEEP_ROWS). */
 function readPoints_() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-  if (!sh || sh.getLastRow() < 2) return [];
+  if (!sh) return [];
 
-  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, HEADERS.length).getValues();
+  const last = sh.getLastRow();
+  if (last < 2) return [];
+
+  const start = Math.max(2, last - KEEP_ROWS + 1);      // хвост таблицы
+  const rows = sh.getRange(start, 1, last - start + 1, HEADERS.length).getValues();
   return rows
     .map(r => ({
       time:    fmtDate_(r[0]),
@@ -50,6 +55,14 @@ function readPoints_() {
       label:   r[8], device: r[9]
     }))
     .filter(p => isFinite(p.lat) && isFinite(p.lon));
+}
+
+/** Удаляет сверху всё, кроме KEEP_ROWS последних точек. */
+function trim_(sh) {
+  const dataRows = sh.getLastRow() - 1;
+  if (dataRows > KEEP_ROWS) {
+    sh.deleteRows(2, dataRows - KEEP_ROWS);            // строка 1 — заголовок
+  }
 }
 
 function fmtDate_(d) {
@@ -88,6 +101,7 @@ function doPost(e) {
     ]);
 
     sh.getRange(sh.getLastRow() + 1, 1, rows.length, HEADERS.length).setValues(rows);
+    trim_(sh);                                  // оставляем только последние KEEP_ROWS точек
 
     return json_({ ok: true, added: rows.length });
   } catch (err) {
