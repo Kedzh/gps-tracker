@@ -252,6 +252,7 @@ const trackGroup = L.layerGroup().addTo(map);
 /* ============ ДАННЫЕ ============ */
 let all = [];          // все точки из таблицы
 let shown = [];        // после фильтра по метке
+let lastSkipped = 0;   // сколько «скачков» выкинуто из статистики
 
 const p2 = n => String(n).padStart(2,'0');
 function fmtTime(d){
@@ -259,12 +260,19 @@ function fmtTime(d){
   return p2(d.getDate())+'.'+p2(d.getMonth()+1)+'.'+d.getFullYear()+' '+
          p2(d.getHours())+':'+p2(d.getMinutes())+':'+p2(d.getSeconds());
 }
+function numOrNull(v){
+  if (v === '' || v === null || v === undefined) return null;
+  const n = +v;
+  return isFinite(n) ? n : null;
+}
 function parseTime(s){
-  if (s instanceof Date) return s;
-  if (typeof s !== 'string') return null;
-  const m = s.trim().match(/^(\d{2})\.(\d{2})\.(\d{4})[ ,]+(\d{2}):(\d{2})(?::(\d{2}))?/);
-  if (!m) { const t = Date.parse(s); return isNaN(t) ? null : new Date(t); }
-  return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5], +(m[6]||0));
+  if (s instanceof Date) return isNaN(s) ? null : s;
+  if (typeof s !== 'string' && typeof s !== 'number') return null;
+  let str = String(s).trim().replace(/\s*\(.*\)\s*$/, '');   // «…GMT+0800 (Иркутск, …)»
+  const m = str.match(/^(\d{2})\.(\d{2})\.(\d{4})[ ,]+(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (m) return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5], +(m[6]||0));
+  const t = Date.parse(str);
+  return isNaN(t) ? null : new Date(t);
 }
 function haversine(a, b){
   const R = 6371000, rad = Math.PI/180;
@@ -284,14 +292,14 @@ function normalize(raw){
   return (Array.isArray(raw) ? raw : []).map((p, i) => ({
     i,
     t: parseTime(p.time),
-    lat: +p.lat, lon: +p.lon,
-    acc: p.acc != null && isFinite(p.acc) ? +p.acc : null,
-    spd: p.speed != null && isFinite(p.speed) ? +p.speed : null,
-    alt: p.alt != null && isFinite(p.alt) ? +p.alt : null,
-    head: p.head != null && isFinite(p.head) ? +p.head : null,
+    lat: numOrNull(p.lat), lon: numOrNull(p.lon),
+    acc: numOrNull(p.acc),
+    spd: numOrNull(p.speed),
+    alt: numOrNull(p.alt),
+    head: numOrNull(p.head),
     label: p.label || '',
     device: p.device || ''
-  })).filter(p => isFinite(p.lat) && isFinite(p.lon));
+  })).filter(p => p.lat !== null && p.lon !== null);
 }
 
 function fillLabels(){
@@ -301,6 +309,13 @@ function fillLabels(){
     set.map(l => '<option value="' + l.replace(/"/g,'&quot;') + '">' + l + '</option>').join('');
   el.label.value = set.includes(cur) ? cur : '';
   cfg.label = el.label.value;
+}
+
+function isJump(a, b){
+  if (!a.t || !b.t) return false;
+  const dt = (b.t - a.t) / 1000;
+  if (dt <= 0) return false;
+  return haversine(a, b) / dt > 30;              // 30 м/с ≈ 108 км/ч
 }
 
 function render(){
@@ -317,25 +332,39 @@ function render(){
     return;
   }
 
-  // сегменты с цветом по скорости
-  if (shown.length > 1){
-    if (shown.length <= 1500){
-      for (let i = 1; i < shown.length; i++){
-        const a = shown[i-1], b = shown[i];
+  // разбиваем трек на непрерывные участки (разрыв = скачок/чужая точка)
+  const runs = [];
+  let cur = [shown[0]];
+  for (let i = 1; i < shown.length; i++){
+    if (isJump(shown[i-1], shown[i])){ runs.push(cur); cur = [shown[i]]; }
+    else cur.push(shown[i]);
+  }
+  runs.push(cur);
+
+  // рисуем сегменты с цветом по скорости
+  if (shown.length <= 1500){
+    for (const run of runs){
+      for (let i = 1; i < run.length; i++){
+        const a = run[i-1], b = run[i];
         const v = (a.spd != null && b.spd != null) ? (a.spd+b.spd)/2 : null;
         L.polyline([[a.lat,a.lon],[b.lat,b.lon]], {
           color: speedColor(v), weight: 4, opacity: .9, renderer: canvas
         }).addTo(trackGroup);
       }
-    } else {
-      L.polyline(shown.map(p => [p.lat,p.lon]), {
-        color:'#3b82f6', weight:4, opacity:.9, renderer: canvas
-      }).addTo(trackGroup);
+    }
+  } else {
+    for (const run of runs){
+      if (run.length > 1)
+        L.polyline(run.map(p => [p.lat,p.lon]), {
+          color:'#3b82f6', weight:4, opacity:.9, renderer: canvas
+        }).addTo(trackGroup);
     }
   }
 
-  // старт и финиш
-  const first = shown[0], last = shown[shown.length-1];
+  // старт и финиш — по «связной» части трека (одиночные шумовые точки мимо)
+  const main = runs.filter(r => r.length > 1).reduce((a, r) => a.concat(r), []);
+  const ends = main.length ? main : shown;
+  const first = ends[0], last = ends[ends.length-1];
   L.circleMarker([first.lat, first.lon], {radius:8, color:'#fff', weight:2,
     fillColor:'#2ea043', fillOpacity:1}).addTo(trackGroup)
     .bindPopup(popupHtml(first, 'Старт'));
@@ -344,16 +373,17 @@ function render(){
       fillColor:'#f85149', fillOpacity:1}).addTo(trackGroup)
       .bindPopup(popupHtml(last, 'Финиш'));
 
-  // статистика
-  let dist = 0, movingMs = 0;
+  // статистика (сегменты-«скачки» — GPS-глюки и чужие точки — не считаем)
+  let dist = 0, movingMs = 0, skipped = 0;
   for (let i = 1; i < shown.length; i++){
-    dist += haversine(shown[i-1], shown[i]);
-    if (shown[i].t && shown[i-1].t){
-      const dt = shown[i].t - shown[i-1].t;
-      if (dt > 0 && dt < 30*60000) movingMs += dt;    // паузы >30 мин не считаем
-    }
+    const a = shown[i-1], b = shown[i];
+    const dtMs = (a.t && b.t) ? (b.t - a.t) : null;
+    if (isJump(a, b)){ skipped++; continue; }
+    dist += haversine(a, b);
+    if (dtMs !== null && dtMs > 0 && dtMs < 30*60000) movingMs += dtMs;  // паузы >30 мин не считаем
   }
-  const withT = shown.filter(p => p.t);
+  lastSkipped = skipped;
+  const withT = ends.filter(p => p.t);
   const from = withT.length ? withT[0].t : null;
   const to   = withT.length ? withT[withT.length-1].t : null;
   const totalMs = (from && to) ? (to - from) : 0;
@@ -367,7 +397,7 @@ function render(){
   el.state.textContent  = shown.length + ' тчк';
   renderRows();
 
-  map.fitBounds(L.latLngBounds(shown.map(p => [p.lat,p.lon])).pad(0.12));
+  map.fitBounds(L.latLngBounds(ends.map(p => [p.lat,p.lon])).pad(0.12));
 }
 
 function fmtDur(ms){
@@ -435,6 +465,8 @@ async function loadTrack(){
     all = normalize(out.points);
     fillLabels();
     render();
+    if (lastSkipped) log('⚠ исключено «скачков» из дистанции: ' + lastSkipped +
+                         ' (точность/чужие точки)', 'warn');
     dot('on');
     log('✔ Загружено точек: ' + all.length + (out.updated ? ' (обновлено ' + out.updated + ')' : ''), 'ok');
   }catch(err){
