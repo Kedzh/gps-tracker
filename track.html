@@ -210,6 +210,7 @@
       <span>скорость:</span><span class="bar"></span>
       <span>медленно → быстро</span>
       <span class="pill" id="snapMode" title="Линия трека привязывается к дорогам (OSRM, данные OpenStreetMap)">прямые отрезки</span>
+      <span class="pill" id="stopsPill" title="Автобусные остановки из листа STOPS">🚏 …</span>
       <span style="margin-left:auto">автообновление: <b id="nextUpd">—</b></span>
     </div>
   </section>
@@ -321,7 +322,7 @@ const el = {
   sAvg:$('sAvg'), sDur:$('sDur'),
   rows:$('rows'), rowsEmpty:$('rowsEmpty'), rowsCount:$('rowsCount'),
   label:$('iLabel'), nextUpd:$('nextUpd'), lnkSheet:$('lnkSheet'),
-  snapMode:$('snapMode')
+  snapMode:$('snapMode'), stopsPill:$('stopsPill')
 };
 
 function log(m, cls){
@@ -372,7 +373,7 @@ baseLayer(currentBase).addTo(map);
 
 const layerTitles = {};
 Object.keys(BASES).forEach(k => layerTitles[BASES[k].t] = k);
-L.control.layers(
+const layersCtl = L.control.layers(
   Object.fromEntries(Object.keys(BASES).map(k => [BASES[k].t, baseLayer(k)])),
   { 'Подписи': labelsLayer },
   { collapsed: true, position: 'topright' }
@@ -386,6 +387,56 @@ map.on('baselayerchange', e => {
 const canvas = L.canvas({padding:0.4});
 const trackGroup = L.layerGroup().addTo(map);
 map.attributionControl.addAttribution('Маршруты: <a href="https://project-osrm.org" target="_blank" rel="noopener">OSRM</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>');
+
+/* ============ ОСТАНОВКИ ============ */
+let stops = [];
+const stopGroup = L.layerGroup();                    // слой остановок (по умолчанию включён)
+layersCtl.addOverlay(stopGroup, '🚏 Остановки');
+stopGroup.addTo(map);
+
+function esc(s){
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderStops(){
+  stopGroup.clearLayers();
+  for (const s of stops){
+    if (!isFinite(s.lat) || !isFinite(s.lon)) continue;
+    L.marker([s.lat, s.lon], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div style="font-size:20px;line-height:1;filter:drop-shadow(0 1px 2px #000a)">🚏</div>',
+        iconSize: [22, 22], iconAnchor: [11, 11]
+      }),
+      keyboard: false
+    }).bindPopup(
+      '<b>' + esc(s.name || 'Остановка') + '</b><br>' +
+      (s.note ? esc(s.note) + '<br>' : '') +
+      (s.time ? 'записано: ' + esc(s.time) + '<br>' : '') +
+      '<a href="https://www.google.com/maps?q=' + s.lat + ',' + s.lon +
+      '" target="_blank" rel="noopener">открыть в Google Maps</a>'
+    ).addTo(stopGroup);
+  }
+  el.stopsPill.textContent = stops.length ? stops.length + ' 🚏' : 'нет 🚏';
+}
+
+async function loadStops(){
+  if (!cfg.url) return;
+  try{
+    const sep = cfg.url.includes('?') ? '&' : '?';
+    const res = await fetch(cfg.url + sep + 'action=stops&token=' + encodeURIComponent(cfg.token),
+                            {redirect:'follow'});
+    const out = await res.json();
+    if (!out || out.ok !== true || !Array.isArray(out.stops)){
+      // старая версия Code.gs — карту это не ломает, просто остановок нет
+      renderStops();
+      return;
+    }
+    stops = out.stops;
+    renderStops();
+  }catch(e){ renderStops(); }
+}
 
 /* ============ ДАННЫЕ ============ */
 let all = [];          // последние точки из таблицы (не больше KEEP_POINTS)
@@ -728,6 +779,7 @@ async function loadTrack(){
     }
     fillLabels();
     render();
+    loadStops();                              // остановки грузим параллельно, без задержки трека
     if (lastSkipped) log('⚠ исключено «скачков» из дистанции: ' + lastSkipped +
                          ' (точность/чужие точки)', 'warn');
     dot('on');

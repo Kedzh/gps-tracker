@@ -152,6 +152,28 @@
     display:inline-block; font-size:11px; padding:2px 8px; border-radius:20px;
     background:#1d2732; border:1px solid var(--line); color:var(--mut);
   }
+
+  /* ===== остановки ===== */
+  .stop{
+    display:flex; align-items:flex-start; gap:10px;
+    background:#10161d; border:1px solid var(--line);
+    border-radius:10px; padding:10px 11px; margin-top:8px;
+  }
+  .stop-ic{
+    font-size:19px; line-height:1.2; flex:0 0 auto;
+    background:#f5a62318; border:1px solid #f5a62355;
+    border-radius:9px; width:36px; height:36px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .stop-main{flex:1 1 auto; min-width:0}
+  .stop-main b{display:block; font-size:15px; overflow-wrap:anywhere}
+  .stop-main small{display:block; font-size:12px; color:var(--mut); margin-top:2px; overflow-wrap:anywhere}
+  .stop-main a{font-size:12.5px}
+  .stop-act{display:flex; gap:6px; flex:0 0 auto; flex-wrap:wrap; justify-content:flex-end}
+  .stop-act button{
+    min-width:0; flex:0 0 auto; padding:7px 10px; font-size:13px; border-radius:8px;
+  }
+  .stop.pending{opacity:.75; border-style:dashed}
 </style>
 </head>
 <body>
@@ -197,6 +219,34 @@
       <button id="btnFlush">🔄 Отправить сейчас</button>
       <button id="btnClear">🧹 Очистить очередь</button>
     </div>
+  </section>
+
+  <!-- ОСТАНОВКИ -->
+  <section class="card">
+    <h2>🚏 Остановки <span class="pill" id="stopsCount">0</span></h2>
+    <div class="btns">
+      <button class="primary" id="btnStopAdd">➕ Записать остановку здесь</button>
+      <button id="btnStopsReload">🔄 Обновить список</button>
+    </div>
+
+    <div id="stopForm" hidden>
+      <label for="iStopName">Название остановки</label>
+      <input id="iStopName" list="stopNames" placeholder="Школа, Центр, Больница …" autocomplete="off">
+      <datalist id="stopNames"></datalist>
+
+      <label for="iStopNote">Примечание (маршрут, особенности)</label>
+      <input id="iStopNote" placeholder="маршрут №5, только по будням" autocomplete="off">
+
+      <p class="hint" id="stopPos">Координаты: —</p>
+      <div class="btns">
+        <button class="go" id="btnStopSave">💾 Сохранить</button>
+        <button id="btnStopCancel">✕ Отмена</button>
+      </div>
+    </div>
+
+    <div id="stopsList"></div>
+    <p class="hint" id="stopsEmpty">Остановок пока нет. Нажмите «Записать остановку здесь», когда автобус стоит на остановке, — точка сохранится в лист STOPS таблицы.</p>
+    <p class="hint" id="stopsPending" hidden></p>
   </section>
 
   <!-- ЖУРНАЛ -->
@@ -267,7 +317,9 @@ const LS = {
   cfg:  'gpstrk_cfg',
   queue:'gpstrk_queue',
   stat: 'gpstrk_stat',
-  dev:  'gpstrk_device'
+  dev:  'gpstrk_device',
+  stops:'gpstrk_stops',        // кэш списка остановок
+  stopq:'gpstrk_stopq'         // неотправленные операции с остановками
 };
 
 function load(k, def){ try{ const v = JSON.parse(localStorage.getItem(k)); return v ?? def; }catch(e){ return def; } }
@@ -475,6 +527,190 @@ async function requestWake(){
 }
 function releaseWake(){ try{ wakeLock && wakeLock.release(); }catch(e){} wakeLock = null; }
 
+/* ============ ОСТАНОВКИ ============ */
+let stops = load(LS.stops, []);          // кэш списка (показываем сразу, даже офлайн)
+let stopQueue = load(LS.stopq, []);      // операции, ждущие отправки: {op:'save'|'del', ...}
+let stopFormPos = null;                  // координаты для новой остановки
+let stopSending = false;
+
+function esc(s){
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderStops(){
+  $('stopsCount').textContent = stops.length;
+  $('stopsEmpty').hidden = stops.length > 0 || !!stopFormPos;
+
+  const nSave = stopQueue.filter(o => o.op === 'save').length;
+  const nDel  = stopQueue.filter(o => o.op === 'del').length;
+  const pend  = $('stopsPending');
+  pend.hidden = !(nSave + nDel);
+  if (nSave + nDel)
+    pend.textContent = '⏳ Ждут отправки: ' +
+      (nSave ? nSave + ' шт.' : '') + (nSave && nDel ? ', ' : '') + (nDel ? 'удаления: ' + nDel : '');
+
+  $('stopsList').innerHTML = stops
+    .slice().sort((a, b) => String(a.name||'').localeCompare(String(b.name||''), 'ru'))
+    .map(s =>
+      '<div class="stop' + (s.pending ? ' pending' : '') + '">' +
+        '<div class="stop-ic">🚏</div>' +
+        '<div class="stop-main">' +
+          '<b>' + esc(s.name || 'Остановка') + '</b>' +
+          '<small>' + esc(s.time || '') + (s.device ? ' · ' + esc(s.device) : '') +
+            (s.pending ? ' · ⏳ не отправлено' : '') + '</small>' +
+          (s.note ? '<small>' + esc(s.note) + '</small>' : '') +
+          '<a href="https://www.google.com/maps?q=' + s.lat + ',' + s.lon +
+            '" target="_blank" rel="noopener">' +
+            (+s.lat).toFixed(5) + ', ' + (+s.lon).toFixed(5) + '</a>' +
+        '</div>' +
+        '<div class="stop-act">' +
+          '<button data-act="ren" data-id="' + esc(s.id) + '" title="Переименовать">✏️</button>' +
+          '<button data-act="del" data-id="' + esc(s.id) + '" title="Удалить">🗑</button>' +
+        '</div>' +
+      '</div>').join('');
+}
+
+async function loadStops(quiet){
+  if (!cfg.url) return;
+  try{
+    const sep = cfg.url.includes('?') ? '&' : '?';
+    const res = await fetch(cfg.url + sep + 'action=stops&token=' + encodeURIComponent(cfg.token));
+    const out = await res.json();
+    if (!out || out.ok !== true) throw new Error((out && out.error) || ('HTTP ' + res.status));
+    if (!Array.isArray(out.stops)) throw new Error('нет stops — обновите Code.gs (нужен CODE_VER 4)');
+
+    // основа — список из таблицы; локальные ещё неотправленные правки накладываем сверху
+    const byId = new Map(out.stops.map(s => [s.id, s]));
+    stopQueue.forEach(o => { if (o.op === 'del') byId.delete(o.id); });
+    stopQueue.forEach(o => { if (o.op === 'save') byId.set(o.stop.id, Object.assign({}, o.stop, {pending:true})); });
+    stops = [...byId.values()];
+    save(LS.stops, stops);
+    renderStops();
+    if (!quiet) log('✔ Остановок в таблице: ' + stops.length, 'ok');
+  }catch(err){
+    log((quiet ? '⚠ ' : '✘ ') + 'Остановки: ' + err.message, quiet ? 'warn' : 'err');
+    renderStops();
+  }
+}
+
+function queueStopOp(op){
+  // удаление своей же неотправленной записи — обе операции не нужны
+  if (op.op === 'del')
+    stopQueue = stopQueue.filter(o => !(o.op === 'save' && o.stop.id === op.id));
+  stopQueue.push(op);
+  save(LS.stopq, stopQueue);
+
+  if (op.op === 'save'){
+    const marked = Object.assign({}, op.stop, {pending:true});
+    const i = stops.findIndex(s => s.id === op.stop.id);
+    if (i >= 0) stops[i] = marked; else stops.push(marked);
+  } else {
+    stops = stops.filter(s => s.id !== op.id);
+  }
+  save(LS.stops, stops);
+  renderStops();
+}
+
+async function flushStops(){
+  if (stopSending || !stopQueue.length || !cfg.url || !navigator.onLine) return;
+  stopSending = true;
+  try{
+    while (stopQueue.length){
+      const op = stopQueue[0];
+      const body = op.op === 'del' ? { token: cfg.token, stopdel: op.id }
+                                   : { token: cfg.token, stopsave: op.stop };
+      const res = await fetch(cfg.url, {
+        method:'POST',
+        // text/plain — «простой» запрос без preflight, Apps Script его принимает
+        headers:{'Content-Type':'text/plain;charset=utf-8'},
+        body: JSON.stringify(body)
+      });
+      const out = await res.json();
+      if (!out || out.ok !== true) throw new Error((out && out.error) || ('HTTP ' + res.status));
+
+      stopQueue.shift(); save(LS.stopq, stopQueue);
+      if (op.op === 'save'){
+        const i = stops.findIndex(s => s.id === op.stop.id);
+        if (i >= 0) delete stops[i].pending;
+      }
+      log(op.op === 'del' ? '✔ Остановка удалена из таблицы'
+                          : '✔ Остановка «' + (op.stop.name || '') + '» сохранена в таблице', 'ok');
+    }
+    save(LS.stops, stops);
+    renderStops();
+  }catch(err){
+    log('✘ Остановка не отправлена: ' + err.message + ' (будет повтор)', 'err');
+  }finally{
+    stopSending = false;
+  }
+}
+
+$('btnStopAdd').onclick = () => {
+  if (!lastPos){ log('Нет координат — дождитесь сигнала GPS', 'warn'); return; }
+  stopFormPos = lastPos;
+  const c = lastPos.coords;
+  $('stopPos').textContent = 'Координаты: ' + c.latitude.toFixed(6) + ', ' + c.longitude.toFixed(6) +
+                             ' (±' + Math.round(c.accuracy) + ' м), время ' + fmtTime(new Date(lastPos.timestamp));
+  $('stopNames').innerHTML = [...new Set(stops.map(s => s.name).filter(Boolean))]
+    .map(n => '<option value="' + esc(n) + '">').join('');
+  $('iStopName').value = ''; $('iStopNote').value = '';
+  $('stopForm').hidden = false;
+  $('iStopName').focus();
+  renderStops();
+};
+$('btnStopCancel').onclick = () => {
+  $('stopForm').hidden = true; stopFormPos = null; renderStops();
+};
+
+$('btnStopSave').onclick = async () => {
+  const name = $('iStopName').value.trim();
+  if (!name){ log('Введите название остановки', 'warn'); $('iStopName').focus(); return; }
+  if (!stopFormPos){ log('Координаты потерялись — нажмите «Записать остановку здесь» заново', 'warn'); return; }
+  const c = stopFormPos.coords;
+  const stop = {
+    id: 'st' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+    name: name,
+    note: $('iStopNote').value.trim(),
+    lat: +c.latitude.toFixed(7),
+    lon: +c.longitude.toFixed(7),
+    time: fmtTime(new Date(stopFormPos.timestamp)),
+    device: cfg.device || defaultDevice()
+  };
+  $('stopForm').hidden = true; stopFormPos = null;
+  queueStopOp({op:'save', stop: stop});
+  log('🚏 Остановка «' + name + '» добавлена' + (navigator.onLine ? '' : ' (нет сети — уйдёт позже)'), 'ok');
+  await flushStops();
+  await loadStops(true);       // сверяемся с таблицей
+};
+
+$('stopsList').onclick = async e => {
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  const s = stops.find(x => x.id === b.dataset.id);
+  if (!s) return;
+
+  if (b.dataset.act === 'ren'){
+    const name = prompt('Название остановки:', s.name || '');
+    if (name === null) return;
+    const nn = name.trim();
+    if (!nn || nn === s.name) return;
+    const note = prompt('Примечание (Enter — оставить как есть):', s.note || '');
+    const stop = Object.assign({}, s, { name: nn });
+    delete stop.pending;
+    if (note !== null) stop.note = note.trim();
+    queueStopOp({op:'save', stop: stop});
+    log('✏ Остановка переименована: «' + nn + '»', 'ok');
+    await flushStops();
+  } else if (b.dataset.act === 'del'){
+    if (!confirm('Удалить остановку «' + (s.name || '') + '»?')) return;
+    queueStopOp({op:'del', id: s.id});
+    log('🗑 Остановка удалена: «' + (s.name || '') + '»', 'warn');
+    await flushStops();
+  }
+};
+$('btnStopsReload').onclick = () => { log('Обновляю список остановок…'); flushStops().then(() => loadStops(false)); };
+
 /* ============ ДЕЙСТВИЯ ============ */
 function writeOne(){
   if (!lastPos){ log('Нет координат — дождитесь сигнала GPS', 'warn'); return; }
@@ -520,12 +756,12 @@ el.btnClear.onclick = () => {
   }
 };
 
-window.addEventListener('online',  () => { dot(''); log('Сеть появилась', 'ok'); flush(); });
+window.addEventListener('online',  () => { dot(''); log('Сеть появилась', 'ok'); flush(); flushStops(); });
 window.addEventListener('offline', () => { dot('err'); log('Нет сети — точки копятся локально', 'warn'); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && tracking){ requestWake(); startWatch(); flush(); }
+  if (document.visibilityState === 'visible' && tracking){ requestWake(); startWatch(); flush(); flushStops(); }
 });
-setInterval(() => { if (queue.length) flush(); }, 20000);
+setInterval(() => { if (queue.length) flush(); if (stopQueue.length) flushStops(); }, 20000);
 
 /* ============ СТАРТ ============ */
 loadForm();
@@ -542,6 +778,9 @@ if (cfg.autostart){
   startWatch();
 }
 flush();
+renderStops();                 // показываем кэш остановок сразу
+loadStops(true);               // и сверяемся с таблицей
+flushStops();                  // доотправляем то, что не ушло офлайн
 </script>
 </body>
 </html>

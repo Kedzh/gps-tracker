@@ -13,11 +13,16 @@
 const TOKEN = 'school-2026';          // общий пароль (пустая строка = без проверки)
 const SHEET_NAME = 'GPS';             // имя листа (создастся автоматически)
 const KEEP_ROWS = 60;                 // сколько ПОСЛЕДНИХ точек хранить в таблице
+const STOP_SHEET = 'STOPS';           // лист остановок (не подрезается)
 
 const HEADERS = [
   'Время', 'Широта', 'Долгота', 'Точность, м',
   'Скорость, м/с', 'Скорость, км/ч', 'Высота, м',
   'Курс, °', 'Метка', 'Устройство'
+];
+
+const STOP_HEADERS = [
+  'Ид', 'Название', 'Широта', 'Долгота', 'Время', 'Устройство', 'Примечание'
 ];
 
 /** Проверка, что веб-приложение живо (откройте URL в браузере).
@@ -33,10 +38,19 @@ function doGet(e) {
       return json_({ ok: false, error: String(err) });
     }
   }
+
+  if (p.action === 'stops') {                     // список остановок для редактора и карты
+    if (TOKEN && p.token !== TOKEN) return json_({ ok: false, error: 'Неверный токен' });
+    try {
+      return json_({ ok: true, stops: readStops_(), updated: now_() });
+    } catch (err) {
+      return json_({ ok: false, error: String(err) });
+    }
+  }
   return json_({ ok: true, app: 'gps-tracker', sheet: SHEET_NAME, ver: CODE_VER });
 }
 
-const CODE_VER = 3;   // 3 = хранение KEEP_ROWS последних точек (проверяется в журнале)
+const CODE_VER = 4;   // 4 = лист остановок (STOPS), action=stops/stopsave/stopdel
 
 /** Все точки листа в JSON для карты (только последние KEEP_ROWS). */
 function readPoints_() {
@@ -67,6 +81,88 @@ function trim_(sh) {
   }
 }
 
+/* ================= ОСТАНОВКИ ================= */
+
+/** Все остановки листа STOPS в JSON. */
+function readStops_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(STOP_SHEET);
+  if (!sh || sh.getLastRow() < 2) return [];
+
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, STOP_HEADERS.length).getValues();
+  return rows
+    .map(r => ({
+      id:      String(r[0] || ''),
+      name:    String(r[1] || '').trim(),
+      lat:     r[2], lon:    r[3],
+      time:    fmtDate_(r[4]),
+      device:  String(r[5] || ''),
+      note:    String(r[6] || '')
+    }))
+    .filter(s => s.id && isFinite(s.lat) && isFinite(s.lon));
+}
+
+/** Сохраняет остановку: новую — добавляет, существующую (по id) — перезаписывает. */
+function saveStop_(s) {
+  if (!s || !isFinite(s.lat) || !isFinite(s.lon)) {
+    return { ok: false, error: 'У остановки нет координат' };
+  }
+  const sh = getStopSheet_();
+  const id = String(s.id || '');
+  if (!id) return { ok: false, error: 'Нет идентификатора остановки' };
+
+  const row = [
+    id,
+    String(s.name || '').trim().slice(0, 120) || 'Остановка',
+    num_(s.lat), num_(s.lon),
+    s.time || now_(),
+    String(s.device || '').slice(0, 80),
+    String(s.note || '').slice(0, 300)
+  ];
+
+  const at = findStopRow_(sh, id);
+  if (at) sh.getRange(at, 1, 1, STOP_HEADERS.length).setValues([row]);
+  else    sh.getRange(sh.getLastRow() + 1, 1, 1, STOP_HEADERS.length).setValues([row]);
+
+  return { ok: true, saved: id };
+}
+
+/** Удаляет остановку по id. */
+function delStop_(id) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(STOP_SHEET);
+  if (!sh) return { ok: true, deleted: 0 };
+  const at = findStopRow_(sh, String(id || ''));
+  if (!at) return { ok: true, deleted: 0 };
+  sh.deleteRows(at, 1);
+  return { ok: true, deleted: 1 };
+}
+
+/** Номер строки с данным id (0 — не найдено). */
+function findStopRow_(sh, id) {
+  if (!id) return 0;
+  const last = sh.getLastRow();
+  if (last < 2) return 0;
+  const ids = sh.getRange(2, 1, last - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]) === id) return i + 2;       // +2: строка 1 — заголовок
+  }
+  return 0;
+}
+
+/** Лист остановок с заголовками (создаётся при первом обращении). */
+function getStopSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(STOP_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(STOP_SHEET);
+    sh.getRange(1, 1, 1, STOP_HEADERS.length).setValues([STOP_HEADERS])
+      .setFontWeight('bold').setBackground('#ffe9c9');
+    sh.setFrozenRows(1);
+    sh.getRange(2, 3, sh.getMaxRows() - 1, 2).setNumberFormat('0.0000000');
+    sh.autoResizeColumns(1, STOP_HEADERS.length);
+  }
+  return sh;
+}
+
 function fmtDate_(d) {
   if (d instanceof Date) return Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm:ss');
   return d === undefined || d === null ? '' : String(d);
@@ -89,6 +185,11 @@ function doPost(e) {
     }
 
     const points = Array.isArray(data.points) ? data.points : [];
+
+    // операции с остановками (редактор в index.html)
+    if (data.stopsave) return json_(saveStop_(data.stopsave));
+    if (data.stopdel)  return json_(delStop_(data.stopdel));
+
     if (!points.length) return json_({ ok: true, added: 0 });
 
     const sh = getSheet_();
