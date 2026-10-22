@@ -50,7 +50,7 @@ function doGet(e) {
   return json_({ ok: true, app: 'gps-tracker', sheet: SHEET_NAME, ver: CODE_VER });
 }
 
-const CODE_VER = 4;   // 4 = лист остановок (STOPS), action=stops/stopsave/stopdel
+const CODE_VER = 5;   // 5 = корректный формат времени (fmtDate_); 4 = лист STOPS, action=stops/stopsave/stopdel
 
 /** Все точки листа в JSON для карты (только последние KEEP_ROWS). */
 function readPoints_() {
@@ -164,8 +164,19 @@ function getStopSheet_() {
 }
 
 function fmtDate_(d) {
-  if (d instanceof Date) return Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm:ss');
-  return d === undefined || d === null ? '' : String(d);
+  // Дата из таблицы может не пройти instanceof Date (мост Apps Script) —
+  // ловим и по getTime(), и строковый ISO/GMT-вариант
+  if (d instanceof Date || (d && typeof d.getTime === 'function' && !isNaN(d.getTime()))) {
+    return Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm:ss');
+  }
+  if (d === undefined || d === null) return '';
+  const s = String(d).trim();
+  if (!s) return '';
+  const t = Date.parse(s);                     // «Thu Oct 22 2026 … GMT+0800 …» → мс
+  if (!isNaN(t)) {
+    return Utilities.formatDate(new Date(t), Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm:ss');
+  }
+  return s;                                    // уже нормальная строка вида «22.10.2026 13:10:00»
 }
 
 function now_() {
